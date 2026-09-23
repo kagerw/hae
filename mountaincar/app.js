@@ -97,8 +97,22 @@ const COL = ['#59b7ff', '#5b6673', '#ffb454'];
 const STREAK = 10, EPS0 = 0.1, EPS_DECAY = 0.97;
 const PX = 14, PY = 12;             // the policy map's grid
 
+// What goes back to the brain as dopamine - train.py --dopa, the same four conditions
+const DOPA = {
+  reward: { label: '報酬どおり', note: '1 ステップごとの報酬を、そのまま選んだ行動の区画へのドーパミンにします（本来の条件）。' },
+  none: { label: 'なし', note: 'ドーパミンを流しません（可塑性はオンのまま）。重みの変化はドーパミンに比例するので、何も覚えません。' },
+  shuffle: { label: '無関係', note: '報酬と同じ大きさのドーパミンを、符号をランダムに反転して流します。量はあっても報酬の情報がありません。' },
+  goal: { label: 'ゴール時のみ', note: 'ゴールした瞬間だけドーパミン（+1）を流し、エネルギーの増分は使いません。' },
+};
+function dopamineSignal(mode, reward, info) {
+  if (mode === 'reward') return reward;
+  if (mode === 'shuffle') return reward * (dopaRnd() < 0.5 ? -1 : 1);
+  if (mode === 'goal') return info.reached_goal ? 1 : null;
+  return null;
+}
+
 const env = new MountainCarEnergyReward(new TimeLimit(new MountainCarEnv(), 200));
-let rnd = mulberry32(20260923);
+let rnd = mulberry32(20260923), dopaRnd = mulberry32(7919);
 let running = false, busy = false;
 let st;                               // statistics over the episodes
 let ep;                               // the episode in progress
@@ -119,7 +133,9 @@ function newEpisode() {
   const n = st.episodes.length + 1;
   const obs = env.reset(rnd);
   ep = { n, obs, steps: 0, ret: 0, maxPos: obs[0], acts: [0, 0, 0], along: 0,
-    eps: EPS0 * EPS_DECAY ** (n - 1), trail: [obs.slice()], lastAct: null, lastRew: null, done: false };
+    eps: EPS0 * EPS_DECAY ** (n - 1), trail: [obs.slice()], lastAct: null, lastRew: null, lastDopa: null,
+    dopa: $('dopa').value, done: false };
+  showDopaNote();
 }
 
 async function step() {
@@ -129,7 +145,9 @@ async function step() {
   ep.acts[a]++;
   if (a === (ep.obs[1] >= 0 ? 2 : 0)) ep.along++;
   const [obs, reward, terminated, truncated, info] = env.step(a);
-  if ($('learnOn').checked) lastGains = (await ask({ type: 'learn', action: a, reward })).gains;
+  const d = dopamineSignal(ep.dopa, reward, info);
+  ep.lastDopa = 0;
+  if (d != null) { const r = await ask({ type: 'learn', action: a, reward: d }); lastGains = r.gains; ep.lastDopa = r.dopa; }
   ep.obs = obs; ep.steps++; ep.ret += reward; ep.maxPos = Math.max(ep.maxPos, obs[0]);
   ep.lastAct = a; ep.lastRew = reward; ep.trail.push(obs.slice());
   if (terminated || truncated) { ep.done = true; ep.goal = !!info.reached_goal; }
@@ -137,7 +155,7 @@ async function step() {
 
 async function endEpisode() {
   const e = { n: ep.n, steps: ep.steps, goal: ep.goal, maxPos: ep.maxPos, ret: ep.ret,
-    along: ep.along / ep.steps, eps: ep.eps, learned: $('learnOn').checked };
+    along: ep.along / ep.steps, eps: ep.eps, dopa: ep.dopa };
   st.episodes.push(e);
   st.cumSteps += e.steps;
   st.streak = e.goal ? st.streak + 1 : 0;
@@ -256,6 +274,7 @@ function drawReadout() {
   $('rAct').style.color = ep.lastAct == null ? '' : COL[ep.lastAct];
   $('rRew').textContent = ep.lastRew == null ? '—' : (ep.lastRew >= 0 ? '+' : '') + ep.lastRew.toFixed(3);
   $('rRet').textContent = ep.ret.toFixed(2);
+  $('rDopa').textContent = ep.lastDopa == null ? '—' : ep.lastDopa === 0 ? '0' : (ep.lastDopa > 0 ? '+' : '') + ep.lastDopa.toFixed(2);
 }
 
 function drawComp() {
@@ -296,7 +315,7 @@ function drawChart() {
   g.strokeStyle = '#232c36'; g.fillStyle = '#8c99a8'; g.font = '11px system-ui, sans-serif'; g.lineWidth = 1;
   for (const s of [0, 100, 200]) { g.beginPath(); g.moveTo(padL, sy(s)); g.lineTo(w - 4, sy(s)); g.stroke(); g.fillText(s, 4, sy(s) + 4); }
   E.forEach((e, i) => {
-    g.fillStyle = e.goal ? (e.learned ? '#54d98c' : '#b69cff') : '#3a4552';
+    g.fillStyle = e.goal ? (e.dopa === 'reward' ? '#54d98c' : '#b69cff') : '#3a4552';
     g.fillRect(padL + i * bw + bw * 0.12, sy(e.steps), Math.max(1, bw * 0.76), sy(0) - sy(e.steps));
   });
   const mark = (m, col, label) => {
@@ -340,8 +359,9 @@ function drawPolicy() {
 
 function addLog(e) {
   const tr = document.createElement('tr');
-  tr.innerHTML = `<td>${e.n}</td><td class="${e.goal ? 'goal' : ''}">${e.goal ? 'ゴール' : '時間切れ'}${e.learned ? '' : '（学習なし）'}</td>` +
-    `<td>${e.steps}</td><td>${e.maxPos.toFixed(3)}</td><td>${e.ret.toFixed(2)}</td><td>${Math.round(e.along * 100)}%</td><td>${e.eps.toFixed(3)}</td>`;
+  tr.innerHTML = `<td>${e.n}</td><td class="${e.goal ? 'goal' : ''}">${e.goal ? 'ゴール' : '時間切れ'}</td>` +
+    `<td>${e.steps}</td><td>${e.maxPos.toFixed(3)}</td><td>${e.ret.toFixed(2)}</td><td>${Math.round(e.along * 100)}%</td><td>${e.eps.toFixed(3)}</td>` +
+    `<td>${DOPA[e.dopa].label}</td>`;
   $('log').prepend(tr);
 }
 
@@ -349,7 +369,7 @@ function addLog(e) {
 $('bRun').onclick = () => {
   running = !running;
   $('bRun').textContent = running ? '⏸ 一時停止' : '▶ 再開';
-  if (running) { setStatus('学習中 — キノコ体が状態を見て行動を選び、報酬がドーパミンとして返ります。'); loop(); }
+  if (running) { setStatus('学習中 — キノコ体が状態を見て行動を選び、選んだ区画にドーパミンが返ります（流し方は「ドーパミン」で選べます）。'); loop(); }
   else setStatus('一時停止中');
 };
 $('bForget').onclick = async () => {
@@ -358,20 +378,91 @@ $('bForget').onclick = async () => {
   const r = await ask({ type: 'forget' });
   lastGains = r.gains; lastDrive = [1, 1, 1];
   st = freshStats(); ep = null; policy = null; lastTrail = [];
-  rnd = mulberry32(20260923);
+  rnd = mulberry32(20260923); dopaRnd = mulberry32(7919);
   $('log').innerHTML = '';
   $('bRun').textContent = '▶ 学習開始';
   setStatus('シナプスの重みを学習前に戻しました。');
   drawAll();
 };
-$('learnOn').onchange = () => {
-  worker.postMessage({ type: 'eta', eta: $('learnOn').checked ? 6e-5 : 0 });
-};
+function showDopaNote() {
+  const mode = $('dopa').value;
+  const later = ep && !ep.done && ep.dopa !== mode ? '（次の試行から）' : '';
+  $('dopaNote').textContent = DOPA[mode].note + later;
+}
+$('dopa').onchange = () => { showDopaNote(); drawCompare(); };
 window.addEventListener('resize', () => drawAll());
 
-function drawAll() { drawWorld(); drawReadout(); drawComp(); drawStats(); drawChart(); drawPolicy(); }
+function drawAll() { drawWorld(); drawReadout(); drawComp(); drawStats(); drawChart(); drawPolicy(); drawCompare(); }
+
+// ------------------------------------------------------------------ the comparison (compare.py, 5 seeds)
+const CMP_COL = { reward: '#54d98c', none: '#8c99a8', shuffle: '#ff7b7b', goal: '#59b7ff' };
+let cmp = null;
+fetch(new URL('./compare.json?v=1', import.meta.url)).then((r) => (r.ok ? r.json() : null)).then((j) => {
+  if (!j) return;
+  cmp = j;
+  $('cmpCard').hidden = false;
+  const pct = (a, b) => `${a}/${b}`;
+  $('cmpTable').innerHTML = j.conditions.map((c) => {
+    const n = c.seeds.length, fs = c.first_success.filter(Boolean), ms = c.mastered.filter(Boolean);
+    const med = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.length % 2 ? s[(s.length - 1) >> 1] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2; };
+    return `<tr data-dopa="${c.dopa}"><td style="color:${CMP_COL[c.dopa]}">${DOPA[c.dopa].label}</td>` +
+      `<td>${fs.length}/${n} 匹${fs.length ? `（中央値 ${med(fs)} 回目）` : ''}</td>` +
+      `<td>${ms.length}/${n} 匹${ms.length ? `（中央値 ${med(ms)} 回目）` : ''}</td>` +
+      `<td>${pct(c.successes, c.episodes)}</td><td>${pct(c.eval_successes, c.eval_episodes)}</td>` +
+      `<td>${Math.round(c.along * 100)}%</td></tr>`;
+  }).join('');
+  $('cmpLegend').innerHTML = j.conditions.map((c) => `<span><i style="background:${CMP_COL[c.dopa]}"></i>${DOPA[c.dopa].label}</span>`).join('') +
+    '<span>線 = 5 匹の平均、帯 = 最小〜最大</span>';
+  drawCompare();
+}).catch(() => {});
+
+function drawCompare() {
+  if (!cmp) return;
+  const sel = $('dopa').value;
+  for (const tr of $('cmpTable').children) tr.style.background = tr.dataset.dopa === sel ? '#1b2530' : '';
+  const [g, w, h] = fit($('cmpChart'));
+  g.clearRect(0, 0, w, h);
+  const padL = 30, padB = 20, padT = 8, N = cmp.episodes;
+  const sx = (i) => padL + i / (N - 1) * (w - padL - 8);
+  const sy = (s) => h - padB - s / 200 * (h - padB - padT);
+  g.strokeStyle = '#232c36'; g.fillStyle = '#8c99a8'; g.font = '11px system-ui, sans-serif'; g.lineWidth = 1;
+  for (const s of [0, 100, 200]) { g.beginPath(); g.moveTo(padL, sy(s)); g.lineTo(w - 4, sy(s)); g.stroke(); g.fillText(s, 4, sy(s) + 4); }
+  for (const e of [1, 25, 50, 75]) if (e < N) g.fillText(e, sx(e - 1) - 4, h - 5);
+  // the selected condition last, so it is drawn on top; the others dimmed
+  const order = [...cmp.conditions].sort((a, b) => (a.dopa === sel) - (b.dopa === sel));
+  for (const c of order) {
+    const on = c.dopa === sel;
+    g.globalAlpha = on ? 0.22 : 0.07;
+    g.fillStyle = CMP_COL[c.dopa];
+    g.beginPath();
+    c.max.forEach((v, i) => (i ? g.lineTo(sx(i), sy(v)) : g.moveTo(sx(i), sy(v))));
+    for (let i = N - 1; i >= 0; i--) g.lineTo(sx(i), sy(c.min[i]));
+    g.closePath(); g.fill();
+    g.globalAlpha = on ? 1 : 0.45;
+    g.strokeStyle = CMP_COL[c.dopa]; g.lineWidth = on ? 2.2 : 1.4;
+    // none and goal are the same line: dash one so both stay visible
+    g.setLineDash(c.dopa === 'goal' ? [5, 4] : []);
+    g.beginPath();
+    c.mean.forEach((v, i) => (i ? g.lineTo(sx(i), sy(v)) : g.moveTo(sx(i), sy(v))));
+    g.stroke();
+    g.setLineDash([]);
+  }
+  g.globalAlpha = 1;
+  // the conditions that never reached the goal all lie on the 200 line: say so
+  const flat = cmp.conditions.filter((c) => c.min.every((v) => v >= 200));
+  if (flat.length) {
+    const t = `${flat.map((c) => DOPA[c.dopa].label).join('・')}: 全試行 200（時間切れ）`;
+    g.font = '12px system-ui, sans-serif';
+    const px = Math.max(9, Math.min(12, 12 * (w - padL - 12) / g.measureText(t).width));
+    g.fillStyle = '#c9d4de'; g.font = `${px}px system-ui, sans-serif`;
+    g.fillText(t, padL + 6, sy(200) + 16);
+  }
+  g.fillStyle = '#8c99a8'; g.font = '11px system-ui, sans-serif';
+  g.fillText(`${N} 試行`, w - 44, h - 5);
+}
 
 st = freshStats();
+showDopaNote();
 drawAll();
 ask({ type: 'init' }).then((m) => {
   const i = m.info;

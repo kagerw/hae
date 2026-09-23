@@ -50,6 +50,8 @@
   th{color:var(--dim);font-weight:500}
   td:first-child,th:first-child{text-align:left}
   .tablewrap{max-height:260px;overflow:auto}
+  table.cmp{min-width:560px}
+  table.cmp th,table.cmp td{white-space:nowrap}
   pre{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;font-size:.78rem;line-height:1.5}
   .note{font-size:.88rem;color:var(--dim)}
   .note p{margin:.4em 0}
@@ -79,6 +81,7 @@
     <span>速度 <b id="rVel">—</b></span>
     <span>行動 <b id="rAct">—</b></span>
     <span>報酬 <b id="rRew">—</b></span>
+    <span>ドーパミン <b id="rDopa">—</b></span>
     <span>このエピソードの報酬合計 <b id="rRet">0</b></span>
   </div>
   <div class="bar">
@@ -88,9 +91,16 @@
       <option value="normal" selected>ふつう</option>
       <option value="fast">最速（描画を間引く）</option>
     </select>
-    <label class="tog"><input type="checkbox" id="learnOn" checked> 学習する（ドーパミン）</label>
+    <label class="tog">ドーパミン
+      <select id="dopa" aria-label="ドーパミンの条件">
+        <option value="reward" selected>報酬どおりに流す</option>
+        <option value="none">流さない</option>
+        <option value="shuffle">報酬と無関係に流す</option>
+        <option value="goal">ゴールしたときだけ</option>
+      </select></label>
     <button id="bForget" disabled>忘れさせて最初から</button>
   </div>
+  <div class="note" id="dopaNote" style="margin-top:8px"></div>
 </div>
 
 <div class="grid2">
@@ -114,10 +124,29 @@
     右の数字はその区画のシナプス重みの平均（1 = 学習前）。</div>
 </div>
 
+<div class="card" id="cmpCard" hidden>
+  <h2>ドーパミンの条件を変えた比較（5 匹ぶん）</h2>
+  <div class="note" style="margin-bottom:8px">同じ脳・同じ探索のまま、ドーパミンの流し方だけを変えて、seed（乱数）の違う 5 匹に各 100 試行まで学習させた結果です
+    （Python 版 <code>mountaincar/compare.py</code> で計測）。上のセレクトで同じ条件をここで試せます。</div>
+  <canvas id="cmpChart" height="220" aria-label="条件ごとの試行ごとのステップ数"></canvas>
+  <div class="legend" id="cmpLegend"></div>
+  <div class="tablewrap" style="max-height:none;margin-top:10px"><table class="cmp">
+    <thead><tr><th>ドーパミン</th><th>初ゴール</th><th>習得（10 連続）</th><th>学習中のゴール</th><th>学習停止後</th><th>速度の向きに押した</th></tr></thead>
+    <tbody id="cmpTable"></tbody>
+  </table></div>
+  <div class="note" style="margin-top:10px">
+    <p><b>流さない</b>: 重みの変化は「学習率 × ケニヨン細胞の活動 × ドーパミン」なので、1 つも変わらず、ほぼランダムに押したまま。</p>
+    <p><b>報酬と無関係に流す</b>: 量は同じでも報酬と対応していないので、重みがでたらめに動き、押し方が片寄ってランダムより悪くなる。
+      効いているのはドーパミンの量ではなく、<b>ドーパミンが報酬の情報を運ぶこと</b>。</p>
+    <p><b>ゴールしたときだけ</b>: 学習前の脳は一度もゴールに届かないので、ドーパミンが一度も流れず「流さない」と完全に同じになる。
+      あっという間に覚えたのは、エネルギーの増分という<b>毎ステップ届く報酬</b>のおかげ。</p>
+  </div>
+</div>
+
 <div class="card">
   <h2>試行の記録</h2>
   <div class="tablewrap"><table>
-    <thead><tr><th>試行</th><th>結果</th><th>ステップ</th><th>最高位置</th><th>報酬合計</th><th>速度の向きに押した</th><th>探索率</th></tr></thead>
+    <thead><tr><th>試行</th><th>結果</th><th>ステップ</th><th>最高位置</th><th>報酬合計</th><th>速度の向きに押した</th><th>探索率</th><th>ドーパミン</th></tr></thead>
     <tbody id="log"></tbody>
   </table></div>
 </div>
@@ -131,7 +160,7 @@
     正なら発火していたケニヨン細胞→その MBON のシナプスが弱まって次もその行動が選ばれやすく、負なら強まって選ばれにくくなります。
     重みの変化は WebAssembly のスパイキングモデルの可塑性ルールの中で起きます。</p>
   <p><b>報酬</b>は下の <code>MountainCarEnergyReward</code> だけ（力学的エネルギーの増分 ×10000、ゴールで +50）。環境は gymnasium の <code>MountainCar-v0</code>（最大 200 ステップ）を JavaScript に移植したもので、
-    Python 版（<code>mountaincar/train.py</code>）と同じ式です。「学習する」を外すと可塑性を止めた対照になり、ゴールできません。</p>
+    Python 版（<code>mountaincar/train.py</code>）と同じ式です。「ドーパミン」のセレクトで、流し方を変えた対照（流さない／報酬と無関係／ゴール時だけ）に切り替えられます。</p>
   <details><summary>使っている報酬関数（Python の原文）</summary>
 <pre>class MountainCarEnergyReward(gym.Wrapper):
     """位置・運動エネルギーの増分を報酬にするラッパー。"""
@@ -174,6 +203,6 @@
   <p style="margin-top:10px">脳モデル: Shiu et al. (2024, <i>Nature</i>) / 配線: FlyWire (CC-BY 4.0)。<a href="../">hae.satoru.net</a></p>
 </div>
 
-<script type="module" src="app.js?v=2"></script>
+<script type="module" src="app.js?v=5"></script>
 </body>
 </html>

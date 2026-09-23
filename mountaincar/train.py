@@ -134,7 +134,28 @@ class FlyBrain:
             self.p.kill()
 
 
-def run_episode(env, brain, seed, eps, learn=True):
+DOPA_MODES = {
+    "reward": "報酬をそのままドーパミンに（本来の条件）",
+    "none": "ドーパミンなし（可塑性はオンのまま、ドーパミンを一切流さない）",
+    "shuffle": "ドーパミンはあるが報酬と無関係（毎ステップ報酬の符号をランダムに反転）",
+    "goal": "ゴールしたときだけドーパミン（エネルギーの増分は使わない）",
+}
+
+
+def dopamine_signal(mode, reward, info, rng):
+    """その 1 ステップで脳に返すドーパミン源（brain.mjs が ±1 で頭打ちにする）。None = 流さない。"""
+    if mode == "reward":
+        return reward
+    if mode == "none":
+        return None
+    if mode == "shuffle":
+        return reward * (1.0 if rng.random() < 0.5 else -1.0)
+    if mode == "goal":
+        return 1.0 if info.get("reached_goal") else None
+    raise ValueError(mode)
+
+
+def run_episode(env, brain, seed, eps, learn=True, dopa="reward", rng=None):
     obs, _ = env.reset(seed=seed)
     total, steps, reached, max_pos = 0.0, 0, False, float(obs[0])
     acts, along = [0, 0, 0], 0
@@ -145,7 +166,9 @@ def run_episode(env, brain, seed, eps, learn=True):
         along += a == (2 if obs[1] >= 0 else 0)    # 今の速度の向きに押したか（エネルギーが増える押し方）
         obs, reward, terminated, truncated, info = env.step(a)
         if learn:
-            brain.ask(cmd="learn", action=a, reward=float(reward))
+            d = dopamine_signal(dopa, float(reward), info, rng)
+            if d is not None:
+                brain.ask(cmd="learn", action=a, reward=float(d))
         total += reward
         steps += 1
         max_pos = max(max_pos, float(obs[0]))
@@ -166,6 +189,9 @@ def main():
     ap.add_argument("--eps-decay", type=float, default=0.97)
     ap.add_argument("--eps-min", type=float, default=0.0)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--dopa", choices=list(DOPA_MODES), default="reward",
+                    help="ドーパミンの与え方: " + " / ".join(f"{k}={v}" for k, v in DOPA_MODES.items()))
+    ap.add_argument("--out", default=None, help="記録を置くディレクトリ（既定 mountaincar/runs）")
     ap.add_argument("--eta", type=float, default=6e-5, help="KC→MBON 可塑性の学習率")
     ap.add_argument("--ms", type=int, default=80, help="1 状態を見せる時間 (ms, 脳内時間)")
     ap.add_argument("--fb", type=int, default=60, help="ドーパミンを流す時間 (ms, 脳内時間)")
@@ -173,15 +199,19 @@ def main():
     args = ap.parse_args()
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S") + f"-seed{args.seed}-eta{args.eta:g}"
-    run_dir = os.path.join(HERE, "runs", stamp)
+    if args.dopa != "reward":
+        stamp += f"-dopa{args.dopa}"
+    out = args.out or os.path.join(HERE, "runs")
+    run_dir = os.path.join(out, stamp)
     n = 1
     while os.path.exists(run_dir):
         n += 1
-        run_dir = os.path.join(HERE, "runs", f"{stamp}-{n}")
+        run_dir = os.path.join(out, f"{stamp}-{n}")
     os.makedirs(run_dir)
 
     env = MountainCarEnergyReward(gym.make("MountainCar-v0"))
     brain = FlyBrain(seed=args.seed, eta=args.eta, ms=args.ms, fb=args.fb, dscale=args.dscale)
+    print(f"ドーパミン: {args.dopa} — {DOPA_MODES[args.dopa]}")
     print(f"脳: FlyWire v783 {brain.info['neurons']:,} ニューロン中、キノコ体のみ "
           f"(KC {brain.info['kc']:,} / 投射ニューロン {brain.info['pn']})")
     for c in brain.info["compartments"]:
@@ -191,13 +221,14 @@ def main():
     rows, first_success, mastered = [], None, None
     total_steps, streak = 0, 0
     eps = args.eps
+    dopa_rng = np.random.default_rng(args.seed + 7919)
     t0 = time.time()
     with open(os.path.join(run_dir, "episodes.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["episode", "steps", "reached_goal", "shaped_return", "max_position",
                     "eps", "cum_steps", "along_velocity", "left", "none", "right", "gain_left", "gain_none", "gain_right"])
         for ep in range(1, args.episodes + 1):
-            r = run_episode(env, brain, seed=args.seed * 100000 + ep, eps=eps)
+            r = run_episode(env, brain, seed=args.seed * 100000 + ep, eps=eps, dopa=args.dopa, rng=dopa_rng)
             total_steps += r["steps"]
             gains = brain.ask(cmd="gains")["gain"]
             streak = streak + 1 if r["reached_goal"] else 0
