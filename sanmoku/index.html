@@ -84,6 +84,9 @@
   td.kifu{font-family:ui-monospace,Consolas,monospace;font-size:.8rem;color:var(--dim)}
   .tablewrap{max-height:260px;overflow:auto}
   .rf{color:var(--fly)} .ry{color:var(--you)} .rd{color:var(--dim)}
+  canvas{display:block;width:100%;border-radius:8px;background:var(--card2)}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:.8rem;color:var(--dim);margin-top:8px}
+  .legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:4px;vertical-align:-1px}
   @media (prefers-reduced-motion:reduce){ *{animation:none!important} .cell.new svg *{stroke-dashoffset:0} .strike line{stroke-dashoffset:0} }
 </style>
 </head>
@@ -95,6 +98,7 @@
 <div id="status">脳を読み込んでいます…</div>
 
 <div class="stats">
+  <div class="stat fly"><div class="k">ハエのレート</div><div class="v" id="sRate">1000</div><div class="s" id="sRateSub">&nbsp;</div></div>
   <div class="stat"><div class="k">対戦</div><div class="v" id="sGames">0</div><div class="s" id="sGamesSub">&nbsp;</div></div>
   <div class="stat fly"><div class="k">ハエの勝ち</div><div class="v" id="sFly">0</div><div class="s" id="sFlySub">&nbsp;</div></div>
   <div class="stat you"><div class="k">相手の勝ち</div><div class="v" id="sYou">0</div><div class="s" id="sYouSub">&nbsp;</div></div>
@@ -154,9 +158,22 @@
 </div>
 
 <div class="card">
+  <h2>レートの推移</h2>
+  <canvas id="rateChart" height="220" aria-label="対戦ごとのハエとあなたのレート"></canvas>
+  <div class="legend">
+    <span><i style="background:var(--fly)"></i>ハエ</span>
+    <span><i style="background:var(--you)"></i>あなた（ハエと対戦したとき）</span>
+    <span><i style="background:transparent;border:1px dashed #566"></i>相手の固定レート</span>
+  </div>
+  <div class="note" style="margin-top:6px">Elo レート（1 局ごとに K = 32）。でたらめに打つ相手を 1000、負けない相手を 1462 に固定しています
+    （負けない相手はでたらめな相手に 4000 局で 3478 勝 522 分 0 敗 = 得点率 93.5%、これが 462 点差）。
+    何も学んでいないハエはでたらめに打つので 1000 から始まり、忘れさせると 1000 に戻ります。負けない相手には引き分けまでしか取れないので、1462 あたりが上限です。</div>
+</div>
+
+<div class="card">
   <h2>対戦の記録</h2>
   <div class="tablewrap"><table>
-    <thead><tr><th>#</th><th>相手</th><th>学び方</th><th>先手</th><th>結果</th><th>手数</th><th>棋譜</th></tr></thead>
+    <thead><tr><th>#</th><th>相手</th><th>学び方</th><th>先手</th><th>結果</th><th>手数</th><th>ハエのレート</th><th>棋譜</th></tr></thead>
     <tbody id="log"></tbody>
   </table></div>
   <div class="note" style="margin-top:6px">棋譜のマス番号: 左上から 1 2 3 / 4 5 6 / 7 8 9。○ がハエ、× が相手。</div>
@@ -173,6 +190,6 @@
   <p style="margin-top:10px">脳モデル: Shiu et al. (2024, <i>Nature</i>) / 配線: FlyWire (CC-BY 4.0)。<a href="../">hae.satoru.net</a></p>
 </div>
 
-<script type="module" src="app.js?v=3"></script>
+<script type="module" src="app.js?v=5"></script>
 </body>
 </html>

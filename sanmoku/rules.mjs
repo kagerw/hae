@@ -53,6 +53,17 @@ export function perfectMove(b, me, rnd = Math.random) {
   return cells[Math.floor(rnd() * cells.length)];
 }
 
+// Elo ratings. The random and the perfect player are fixed anchors: over 4000
+// games (first move alternating) perfect scored 93.5% against random (3478
+// wins, 522 draws), which is +462. A naive fly plays like the random player,
+// so it starts there. Nothing can beat the perfect player, so ~1462 is the top.
+export const RATING = { random: 1000, perfect: 1462, start: 1000, k: 32 };
+
+/** A's new rating after scoring `score` (1 win, 0.5 draw, 0 loss) against B. */
+export function elo(ra, rb, score, k = RATING.k) {
+  return ra + k * (score - 1 / (1 + 10 ** ((rb - ra) / 400)));
+}
+
 // Exploration while learning: the chance of a random move, EPS0 at first and
 // x EPS_DECAY for every game learned (as mountaincar: 10%, then less).
 export const EPS0 = 0.1, EPS_DECAY = 0.995;

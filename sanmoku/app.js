@@ -7,8 +7,11 @@
 // cell whose compartment is driven least, and after every game it is shown its
 // positions again with the result as dopamine (rules.mjs dopamineFor) - or,
 // taught, it is corrected right after each wrong move (fly.mjs teach). What it
-// has learned (the synapse gains) is kept in this browser's IndexedDB.
-import { EMPTY, FLY, OPP, other, empties, winner, randomMove, perfectMove, dopamineFor, explorationAfter } from './rules.mjs?v=3';
+// has learned (the synapse gains) is kept in this browser's IndexedDB. Every
+// game moves the fly's Elo rating (and yours, when you play it) against the
+// fixed ratings of the random and the perfect player (rules.mjs RATING).
+import { EMPTY, FLY, OPP, other, empties, winner, randomMove, perfectMove, dopamineFor, explorationAfter,
+  RATING, elo } from './rules.mjs?v=4';
 
 const DELAY = { slow: 900, normal: 450, fast: 40 };
 
@@ -116,8 +119,8 @@ const flyPlayer = {
   },
 };
 
-const randomPlayer = { name: 'でたらめ', async choose(b) { return { cell: randomMove(b) }; } };
-const perfectPlayer = { name: '負けない相手', async choose(b, me) { return { cell: perfectMove(b, me) }; } };
+const randomPlayer = { name: 'でたらめ', rating: RATING.random, async choose(b) { return { cell: randomMove(b) }; } };
+const perfectPlayer = { name: '負けない相手', rating: RATING.perfect, async choose(b, me) { return { cell: perfectMove(b, me) }; } };
 
 let clickWaiter = null;
 const humanPlayer = {
@@ -208,7 +211,31 @@ let history = [];
 try { history = JSON.parse(localStorage.getItem(STORE) || '[]'); } catch { history = []; }
 const save = () => { try { localStorage.setItem(STORE, JSON.stringify(history.slice(-500))); } catch {} };
 
+// the fly's rating goes with its brain (back to the start when it forgets); yours stays
+const RSTORE = 'hae-sanmoku-rating-v1';
+let ratings = { fly: RATING.start, you: RATING.start };
+try { ratings = { ...ratings, ...JSON.parse(localStorage.getItem(RSTORE) || '{}') }; } catch {}
+const saveRatings = () => { try { localStorage.setItem(RSTORE, JSON.stringify(ratings)); } catch {} };
+
+/** Rate a finished game; returns what goes into its record. */
+function rate(result, human) {
+  const score = result === 'fly' ? 1 : result === 'draw' ? 0.5 : 0;
+  const fr0 = ratings.fly, yr0 = ratings.you;
+  ratings.fly = elo(fr0, human ? yr0 : state.opp.rating, score);
+  if (human) ratings.you = elo(yr0, fr0, 1 - score);
+  saveRatings();
+  return human ? { fr0, fr: ratings.fly, yr: ratings.you } : { fr0, fr: ratings.fly };
+}
+
+const signed = (x) => (x >= 0 ? '+' : '−') + Math.abs(Math.round(x));
+
 function drawStats() {
+  const last = history.at(-1);
+  $('sRate').textContent = Math.round(ratings.fly);
+  $('sRateSub').textContent = (last?.fr != null && Math.abs(last.fr - ratings.fly) < 1e-6 ? `前の対戦で ${signed(last.fr - last.fr0)}  ` : '') +
+    (history.some((g) => g.yr != null) ? `あなた ${Math.round(ratings.you)}` : '');
+  drawRateChart();
+
   const n = history.length;
   const count = (gs, r) => gs.filter((g) => g.result === r).length;
   const pct = (k, of) => (of ? `${Math.round((100 * k) / of)}%` : '');
@@ -228,9 +255,79 @@ function drawStats() {
     const no = n - arr.length + k + 1;
     const kifu = g.moves.map(([p, i]) => (p === FLY ? '○' : '×') + (i + 1)).join(' ');
     return `<tr><td>${no}</td><td>${g.opp}</td><td>${MODE[g.mode] ?? ''}${g.mode === 'teach' ? ` (直し ${g.fixes})` : ''}${g.explored ? ` 探索 ${g.explored}` : ''}</td><td>${g.first === FLY ? 'ハエ' : '相手'}</td>` +
-      `<td class="${RES[g.result][1]}">${RES[g.result][0]}</td><td>${g.moves.length}</td><td class="kifu">${kifu}</td></tr>`;
+      `<td class="${RES[g.result][1]}">${RES[g.result][0]}</td><td>${g.moves.length}</td>` +
+      `<td>${g.fr != null ? `${Math.round(g.fr)} <span class="rd">${signed(g.fr - g.fr0)}</span>` : ''}</td><td class="kifu">${kifu}</td></tr>`;
   }).reverse().join('');
 }
+
+// ------------------------------------------------------------------ the rating chart
+function fit(canvas) {
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = +canvas.getAttribute('height');
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); canvas.style.height = h + 'px';
+  }
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [g, w, h];
+}
+
+// the fly's rating after every game (a break and a dashed line where it forgot),
+// yours after every game you played it, and the two fixed opponents as dashed lines
+function drawRateChart() {
+  const [g, w, h] = fit($('rateChart'));
+  g.clearRect(0, 0, w, h);
+  const G =history.map((x, i) => ({ ...x, n: i + 1 })).filter((x) => x.fr != null);
+  const padL = 38, padR = 58, padT = 10, padB = 20;   // the fixed opponents are named in the right margin
+  const all = G.flatMap((x) => (x.yr != null ? [x.fr0, x.fr, x.yr] : [x.fr0, x.fr]));
+  const lo = Math.min(950, ...all) - 10, hi = Math.max(1500, ...all) + 10;
+  const first = G.length ? G[0].n - 1 : 0, last = Math.max(first + 20, G.length ? G.at(-1).n : 0);
+  const sx = (n) => padL + (n - first) / (last - first) * (w - padL - padR);
+  const sy = (r) => h - padB - (r - lo) / (hi - lo) * (h - padT - padB);
+  g.font = '11px system-ui, sans-serif'; g.lineWidth = 1;
+
+  for (let r = Math.ceil(lo / 100) * 100; r <= hi; r += 100) {
+    g.strokeStyle = '#1b232c'; g.beginPath(); g.moveTo(padL, sy(r)); g.lineTo(w - padR, sy(r)); g.stroke();
+    g.fillStyle = '#8c99a8'; g.fillText(r, 4, sy(r) + 4);
+  }
+  for (const [r, label] of [[RATING.random, 'でたらめ'], [RATING.perfect, '負けない']]) {
+    g.strokeStyle = '#566'; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(padL, sy(r)); g.lineTo(w - padR, sy(r)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = '#8c99a8'; g.fillText(label, w - padR + 6, sy(r) - 2); g.fillText(r, w - padR + 6, sy(r) + 11);
+  }
+  if (!G.length) {
+    g.fillStyle = '#8c99a8'; g.fillText('対戦するとここにレートの推移が出ます', padL + 8, padT + 16);
+    return;
+  }
+
+  // the fly: a line from each game's rating before to after, broken where it forgot
+  g.strokeStyle = '#ffb454'; g.lineWidth = 1.8; g.beginPath();
+  G.forEach((x, k) => {
+    const prev = G[k - 1];
+    if (!prev || prev.n !== x.n - 1 || Math.abs(prev.fr - x.fr0) > 1e-6) {
+      if (prev) {
+        g.stroke();
+        g.strokeStyle = '#ffb45466'; g.lineWidth = 1; g.setLineDash([3, 3]);
+        g.beginPath(); g.moveTo(sx(x.n - 1), padT); g.lineTo(sx(x.n - 1), h - padB); g.stroke(); g.setLineDash([]);
+        g.fillStyle = '#ffb454'; g.fillText('忘れた', sx(x.n - 1) + 3, padT + 10);
+        g.strokeStyle = '#ffb454'; g.lineWidth = 1.8; g.beginPath();
+      }
+      g.moveTo(sx(x.n - 1), sy(x.fr0));
+    }
+    g.lineTo(sx(x.n), sy(x.fr));
+  });
+  g.stroke();
+
+  // you: a dot after every game you played the fly, joined
+  const Y = G.filter((x) => x.yr != null);
+  g.strokeStyle = '#59b7ff'; g.fillStyle = '#59b7ff'; g.lineWidth = 1.2; g.beginPath();
+  Y.forEach((x, k) => (k ? g.lineTo(sx(x.n), sy(x.yr)) : g.moveTo(sx(x.n), sy(x.yr))));
+  g.stroke();
+  for (const x of Y) { g.beginPath(); g.arc(sx(x.n), sy(x.yr), 2.2, 0, 7); g.fill(); }
+
+  g.fillStyle = '#8c99a8';
+  g.fillText(String(first), padL, h - 5);
+  g.fillText(`${last} 対戦`, w - padR - g.measureText(`${last} 対戦`).width, h - 5);
+}
+window.addEventListener('resize', drawRateChart);
 
 // ------------------------------------------------------------------ the game
 const state = { board: Array(9).fill(EMPTY), opp: humanPlayer, game: 0, firstFlip: false, auto: false };
@@ -284,7 +381,7 @@ async function playGame() {
   r.className = 'result ' + (result === 'fly' ? 'fly' : result === 'opp' ? 'you' : 'draw');
   r.textContent = result === 'fly' ? 'ハエの勝ち！' : result === 'draw' ? '引き分け' :
     state.opp === humanPlayer ? 'あなたの勝ち！' : `${state.opp.name}の勝ち`;
-  history.push({ opp: state.opp.name, first, result, moves, mode, fixes, explored, t: Date.now() });
+  history.push({ opp: state.opp.name, first, result, moves, mode, fixes, explored, ...rate(result, state.opp === humanPlayer), t: Date.now() });
   save(); drawStats();
   await flyPlayer.learn({ moves, result, mode });
 
@@ -317,7 +414,8 @@ $('mode').addEventListener('change', showBrain);
 $('bForget').addEventListener('click', async () => {
   if (!confirm('ハエが学んだことをすべて忘れさせますか？（対戦の記録は残ります）')) return;
   await flyPlayer.forget();
-  setStatus('ハエは学んだことをすべて忘れました。');
+  ratings.fly = RATING.start; saveRatings(); drawStats();
+  setStatus('ハエは学んだことをすべて忘れました（レートも最初の 1000 に戻ります）。');
   start();
 });
 $('bReset').addEventListener('click', () => {
