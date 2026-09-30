@@ -9,6 +9,9 @@ connectome, driving a NeuroMechFly body.
   front leg in stroke order, and is fed when it is right.
 - **/suji/** — the same fly trained on MNIST digits 1-9.
 - **/juku/kiroku.html** — visitors' handwriting and how the fly read it.
+- **/sanmoku/** — tic-tac-toe against the mushroom body, which learns from wins
+  and losses or from a minimax teacher that corrects each wrong move
+  (`sanmoku/README.md`).
 - **/tataki/**, **/game2/**, **/game/** — games with the flies; **/kansatsu/**,
   **/gakushu/**, **/meiro/**, **/test01-04/** — earlier experiments.
 
